@@ -8,9 +8,12 @@ on:
       - "[0-9]+.[0-9x]+*"
     paths:
       - "immutables/_version.py"
+  # Builds the sdist and wheels without validating or publishing a release
+  workflow_dispatch:
 
 jobs:
   validate-release-request:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
     - name: Validate release PR
@@ -44,6 +47,8 @@ jobs:
 
   build-sdist:
     needs: validate-release-request
+    # Run when validation was skipped (workflow_dispatch), but not if it failed
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
 
     steps:
@@ -66,6 +71,7 @@ jobs:
 
   build-wheels-matrix:
     needs: validate-release-request
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     outputs:
       include: ${{ steps.set-matrix.outputs.include }}
@@ -74,20 +80,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - run: pip install cibuildwheel==2.21.3
+      - run: pip install cibuildwheel==4.3.5
       - id: set-matrix
         run: |
           MATRIX_INCLUDE=$(
             {
-              cibuildwheel --print-build-identifiers --platform linux --arch x86_64,aarch64 | grep cp |  jq -nRc '{"only": inputs, "os": "ubuntu-latest"}' \
-              && cibuildwheel --print-build-identifiers --platform macos --arch x86_64,arm64 | grep cp |  jq -nRc '{"only": inputs, "os": "macos-latest"}' \
-              && cibuildwheel --print-build-identifiers --platform windows --arch x86,AMD64 | grep cp |  jq -nRc '{"only": inputs, "os": "windows-latest"}'
+              cibuildwheel --print-build-identifiers --platform linux --archs x86_64 | grep cp |  jq -nRc '{"only": inputs, "os": "ubuntu-latest"}' \
+              && cibuildwheel --print-build-identifiers --platform linux --archs aarch64 | grep cp |  jq -nRc '{"only": inputs, "os": "ubuntu-26.04-arm"}' \
+              && cibuildwheel --print-build-identifiers --platform macos --archs x86_64,arm64 | grep cp |  jq -nRc '{"only": inputs, "os": "macos-latest"}' \
+              && cibuildwheel --print-build-identifiers --platform windows --archs x86,AMD64 | grep cp |  jq -nRc '{"only": inputs, "os": "windows-latest"}' \
+              && cibuildwheel --print-build-identifiers --platform windows --archs ARM64 | grep cp |  jq -nRc '{"only": inputs, "os": "windows-11-arm"}'
             } | jq -sc
           )
           echo "include=$MATRIX_INCLUDE" >> $GITHUB_OUTPUT
 
   build-wheels:
     needs: build-wheels-matrix
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ${{ matrix.os }}
     name: Build ${{ matrix.only }}
 
@@ -108,11 +117,7 @@ jobs:
         fetch-depth: 50
         submodules: true
 
-    - name: Set up QEMU
-      if: runner.os == 'Linux'
-      uses: docker/setup-qemu-action@v2
-
-    - uses: pypa/cibuildwheel@7940a4c0e76eb2030e473a5f864f291f63ee879b  # v2.21.3
+    - uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e  # v4.3.5
       with:
         only: ${{ matrix.only }}
       env:
@@ -126,6 +131,7 @@ jobs:
 
   publish:
     needs: [build-sdist, build-wheels]
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
     steps:
@@ -144,7 +150,7 @@ jobs:
       id: relver
       run: |
         set -e
-        echo ::set-output name=version::$(cat dist/VERSION)
+        echo "version=$(cat dist/VERSION)" >> "$GITHUB_OUTPUT"
         rm dist/VERSION
 
     - name: Merge and tag the PR
